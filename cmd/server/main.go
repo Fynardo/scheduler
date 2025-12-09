@@ -9,6 +9,8 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+
 	"insights-scheduler/internal/config"
 	"insights-scheduler/internal/core/domain"
 	"insights-scheduler/internal/core/usecases"
@@ -148,6 +150,27 @@ func main() {
 		WriteTimeout: cfg.Server.WriteTimeout,
 	}
 
+	// Create metrics server
+	var metricsServer *http.Server
+	if cfg.Metrics.Enabled {
+		metricsAddr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Metrics.Port)
+		metricsMux := http.NewServeMux()
+		metricsMux.Handle(cfg.Metrics.Path, promhttp.Handler())
+
+		metricsServer = &http.Server{
+			Addr:    metricsAddr,
+			Handler: metricsMux,
+		}
+
+		// Start metrics server
+		go func() {
+			log.Printf("Starting metrics server on %s%s", metricsAddr, cfg.Metrics.Path)
+			if err := metricsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Printf("Metrics server error: %v", err)
+			}
+		}()
+	}
+
 	// Create context for graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -179,6 +202,13 @@ func main() {
 
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		log.Fatalf("Server forced to shutdown: %v", err)
+	}
+
+	// Shutdown metrics server if enabled
+	if cfg.Metrics.Enabled && metricsServer != nil {
+		if err := metricsServer.Shutdown(shutdownCtx); err != nil {
+			log.Printf("Metrics server forced to shutdown: %v", err)
+		}
 	}
 
 	log.Println("Server exited")
