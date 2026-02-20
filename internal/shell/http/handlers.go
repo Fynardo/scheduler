@@ -34,7 +34,7 @@ func (h *JobHandler) CreateJob(w http.ResponseWriter, r *http.Request) {
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		log.Printf("[DEBUG] HTTP CreateJob failed - JSON decode error: %v", err)
-		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		respondWithErrors(w, http.StatusBadRequest, []ErrorObject{errorInvalidJSON(err)})
 		return
 	}
 
@@ -43,21 +43,15 @@ func (h *JobHandler) CreateJob(w http.ResponseWriter, r *http.Request) {
 
 	if !isValidIdentity(ident) {
 		log.Printf("[DEBUG] CreateJob failed - invalid identity")
-		http.Error(w, "Invalid identity", http.StatusBadRequest)
+		respondWithErrors(w, http.StatusBadRequest, []ErrorObject{errorInvalidIdentity()})
 		return
 	}
 
 	log.Printf("[DEBUG] HTTP CreateJob - parsed request: name=%s, org_id=%s, username=%s, user_id=%s, schedule=%s, type=%s", req.Name, ident.Identity.OrgID, ident.Identity.User.Username, ident.Identity.User.UserID, req.Schedule, req.Type)
 
-	if req.Name == "" || req.Schedule == "" || req.Type == "" {
-		log.Printf("[DEBUG] HTTP CreateJob failed - missing required fields: name=%s, schedule=%s, type=%s", req.Name, req.Schedule, req.Type)
-		http.Error(w, "Missing required fields (name, schedule, type)", http.StatusBadRequest)
-		return
-	}
-
-	if req.Payload == nil {
-		log.Printf("[DEBUG] HTTP CreateJob failed - payload is required")
-		http.Error(w, "Missing required field: payload", http.StatusBadRequest)
+	if req.Name == "" || req.Schedule == "" || req.Type == "" || req.Payload == nil {
+		log.Printf("[DEBUG] HTTP CreateJob failed - missing required fields")
+		respondWithErrors(w, http.StatusBadRequest, []ErrorObject{errorMissingFields()})
 		return
 	}
 
@@ -67,17 +61,18 @@ func (h *JobHandler) CreateJob(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if err == domain.ErrInvalidSchedule || err == domain.ErrInvalidPayload || err == domain.ErrInvalidOrgID {
 			log.Printf("[DEBUG] HTTP CreateJob failed - validation error: %v", err)
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			respondWithErrors(w, http.StatusBadRequest, []ErrorObject{errorBadRequest()})
 			return
 		}
 		log.Printf("[DEBUG] HTTP CreateJob failed - internal error: %v", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		respondWithErrors(w, http.StatusInternalServerError, []ErrorObject{errorInternalServer()})
 		return
 	}
 
 	log.Printf("[DEBUG] HTTP CreateJob success - job created with ID: %s", job.ID)
 
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Location", "/api/scheduler/v1/jobs/"+job.ID)
 	w.WriteHeader(http.StatusCreated)
 
 	if err := json.NewEncoder(w).Encode(ToJobResponse(job)); err != nil {
@@ -93,7 +88,7 @@ func (h *JobHandler) GetAllJobs(w http.ResponseWriter, r *http.Request) {
 
 	if !isValidIdentity(ident) {
 		log.Printf("[DEBUG] GetAllJobs failed - invalid identity")
-		http.Error(w, "Invalid identity", http.StatusBadRequest)
+		respondWithErrors(w, http.StatusBadRequest, []ErrorObject{errorInvalidIdentity()})
 		return
 	}
 
@@ -104,7 +99,8 @@ func (h *JobHandler) GetAllJobs(w http.ResponseWriter, r *http.Request) {
 	// Only get jobs for the current user
 	jobs, total, err := h.jobService.GetJobsByUserID(ident.Identity.User.UserID, statusFilter, nameFilter, offset, limit)
 	if err != nil {
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		log.Printf("[DEBUG] GetAllJobs failed - unable to retrieve jobs")
+		respondWithErrors(w, http.StatusInternalServerError, []ErrorObject{errorInternalServer()})
 		return
 	}
 
@@ -123,7 +119,7 @@ func (h *JobHandler) GetJob(w http.ResponseWriter, r *http.Request) {
 
 	if !isValidIdentity(ident) {
 		log.Printf("[DEBUG] GetJob failed - invalid identity")
-		http.Error(w, "Invalid identity", http.StatusBadRequest)
+		respondWithErrors(w, http.StatusBadRequest, []ErrorObject{errorInvalidIdentity()})
 		return
 	}
 
@@ -131,10 +127,10 @@ func (h *JobHandler) GetJob(w http.ResponseWriter, r *http.Request) {
 	job, err := h.jobService.GetJobWithUserCheck(id, ident.Identity.User.UserID)
 	if err != nil {
 		if err == domain.ErrJobNotFound {
-			http.Error(w, "Job not found", http.StatusNotFound)
+			respondWithErrors(w, http.StatusNotFound, []ErrorObject{errorNotFound("job", id)})
 			return
 		}
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		respondWithErrors(w, http.StatusInternalServerError, []ErrorObject{errorInternalServer()})
 		return
 	}
 
@@ -150,8 +146,8 @@ func (h *JobHandler) UpdateJob(w http.ResponseWriter, r *http.Request) {
 	ident := identity.Get(r.Context())
 
 	if !isValidIdentity(ident) {
-		log.Printf("[DEBUG] GetJob failed - invalid identity")
-		http.Error(w, "Invalid identity", http.StatusBadRequest)
+		log.Printf("[DEBUG] UpdateJob failed - invalid identity")
+		respondWithErrors(w, http.StatusBadRequest, []ErrorObject{errorInvalidIdentity()})
 		return
 	}
 
@@ -164,31 +160,28 @@ func (h *JobHandler) UpdateJob(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		respondWithErrors(w, http.StatusBadRequest, []ErrorObject{errorInvalidJSON(err)})
 		return
 	}
 
-	if req.Name == "" || req.Schedule == "" || req.Type == "" || req.Status == "" {
-		http.Error(w, "Missing required fields (name, schedule, type, status)", http.StatusBadRequest)
-		return
-	}
-
-	if req.Payload == nil {
-		http.Error(w, "Missing required field: payload", http.StatusBadRequest)
+	if req.Name == "" || req.Schedule == "" || req.Type == "" || req.Status == "" || req.Payload == nil {
+		respondWithErrors(w, http.StatusBadRequest, []ErrorObject{errorMissingFields()})
 		return
 	}
 
 	job, err := h.jobService.UpdateJob(id, req.Name, ident.Identity.OrgID, ident.Identity.User.Username, ident.Identity.User.UserID, req.Schedule, req.Type, req.Payload, req.Status)
 	if err != nil {
 		if err == domain.ErrJobNotFound {
-			http.Error(w, "Job not found", http.StatusNotFound)
+			respondWithErrors(w, http.StatusNotFound, []ErrorObject{errorNotFound("job", id)})
 			return
 		}
 		if err == domain.ErrInvalidSchedule || err == domain.ErrInvalidPayload || err == domain.ErrInvalidStatus || err == domain.ErrInvalidOrgID {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			log.Printf("[DEBUG] HTTP UpdateJob failed - validation error: %v", err)
+			respondWithErrors(w, http.StatusBadRequest, []ErrorObject{errorBadRequest()})
 			return
 		}
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		log.Printf("[DEBUG] HTTP UpdateJob failed - internal error: %v", err)
+		respondWithErrors(w, http.StatusInternalServerError, []ErrorObject{errorInternalServer()})
 		return
 	}
 
@@ -205,13 +198,13 @@ func (h *JobHandler) PatchJob(w http.ResponseWriter, r *http.Request) {
 
 	if !isValidIdentity(ident) {
 		log.Printf("[DEBUG] PatchJob failed - invalid identity")
-		http.Error(w, "Invalid identity", http.StatusBadRequest)
+		respondWithErrors(w, http.StatusBadRequest, []ErrorObject{errorInvalidIdentity()})
 		return
 	}
 
 	var updates map[string]interface{}
 	if err := json.NewDecoder(r.Body).Decode(&updates); err != nil {
-		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		respondWithErrors(w, http.StatusBadRequest, []ErrorObject{errorInvalidJSON(err)})
 		return
 	}
 
@@ -219,14 +212,16 @@ func (h *JobHandler) PatchJob(w http.ResponseWriter, r *http.Request) {
 	job, err := h.jobService.PatchJobWithUserCheck(id, ident.Identity.User.UserID, updates)
 	if err != nil {
 		if err == domain.ErrJobNotFound {
-			http.Error(w, "Job not found", http.StatusNotFound)
+			respondWithErrors(w, http.StatusNotFound, []ErrorObject{errorNotFound("job", id)})
 			return
 		}
 		if err == domain.ErrInvalidSchedule || err == domain.ErrInvalidPayload || err == domain.ErrInvalidStatus || err == domain.ErrInvalidOrgID {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			log.Printf("[DEBUG] HTTP PatchJob failed - validation error: %v", err)
+			respondWithErrors(w, http.StatusBadRequest, []ErrorObject{errorBadRequest()})
 			return
 		}
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		log.Printf("[DEBUG] HTTP PatchJob failed - internal error: %v", err)
+		respondWithErrors(w, http.StatusInternalServerError, []ErrorObject{errorInternalServer()})
 		return
 	}
 
@@ -243,7 +238,7 @@ func (h *JobHandler) DeleteJob(w http.ResponseWriter, r *http.Request) {
 
 	if !isValidIdentity(ident) {
 		log.Printf("[DEBUG] DeleteJob failed - invalid identity")
-		http.Error(w, "Invalid identity", http.StatusBadRequest)
+		respondWithErrors(w, http.StatusBadRequest, []ErrorObject{errorInvalidIdentity()})
 		return
 	}
 
@@ -251,10 +246,10 @@ func (h *JobHandler) DeleteJob(w http.ResponseWriter, r *http.Request) {
 	err := h.jobService.DeleteJobWithUserCheck(id, ident.Identity.User.UserID)
 	if err != nil {
 		if err == domain.ErrJobNotFound {
-			http.Error(w, "Job not found", http.StatusNotFound)
+			respondWithErrors(w, http.StatusNotFound, []ErrorObject{errorNotFound("job", id)})
 			return
 		}
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		respondWithErrors(w, http.StatusInternalServerError, []ErrorObject{errorInternalServer()})
 		return
 	}
 
@@ -270,7 +265,7 @@ func (h *JobHandler) RunJob(w http.ResponseWriter, r *http.Request) {
 
 	if !isValidIdentity(ident) {
 		log.Printf("[DEBUG] RunJob failed - invalid identity")
-		http.Error(w, "Invalid identity", http.StatusBadRequest)
+		respondWithErrors(w, http.StatusBadRequest, []ErrorObject{errorInvalidIdentity()})
 		return
 	}
 
@@ -278,10 +273,10 @@ func (h *JobHandler) RunJob(w http.ResponseWriter, r *http.Request) {
 	err := h.jobService.RunJobWithUserCheck(id, ident.Identity.User.UserID)
 	if err != nil {
 		if err == domain.ErrJobNotFound {
-			http.Error(w, "Job not found", http.StatusNotFound)
+			respondWithErrors(w, http.StatusNotFound, []ErrorObject{errorNotFound("job", id)})
 			return
 		}
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		respondWithErrors(w, http.StatusInternalServerError, []ErrorObject{errorInternalServer()})
 		return
 	}
 
@@ -297,7 +292,7 @@ func (h *JobHandler) PauseJob(w http.ResponseWriter, r *http.Request) {
 
 	if !isValidIdentity(ident) {
 		log.Printf("[DEBUG] PauseJob failed - invalid identity")
-		http.Error(w, "Invalid identity", http.StatusBadRequest)
+		respondWithErrors(w, http.StatusBadRequest, []ErrorObject{errorInvalidIdentity()})
 		return
 	}
 
@@ -305,14 +300,14 @@ func (h *JobHandler) PauseJob(w http.ResponseWriter, r *http.Request) {
 	job, err := h.jobService.PauseJobWithUserCheck(id, ident.Identity.User.UserID)
 	if err != nil {
 		if err == domain.ErrJobNotFound {
-			http.Error(w, "Job not found", http.StatusNotFound)
+			respondWithErrors(w, http.StatusNotFound, []ErrorObject{errorNotFound("job", id)})
 			return
 		}
 		if err == domain.ErrJobAlreadyPaused {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			respondWithError(w, http.StatusBadRequest, "Job Already Paused", "The job is already in a paused state")
 			return
 		}
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		respondWithErrors(w, http.StatusInternalServerError, []ErrorObject{errorInternalServer()})
 		return
 	}
 
@@ -329,7 +324,7 @@ func (h *JobHandler) ResumeJob(w http.ResponseWriter, r *http.Request) {
 
 	if !isValidIdentity(ident) {
 		log.Printf("[DEBUG] ResumeJob failed - invalid identity")
-		http.Error(w, "Invalid identity", http.StatusBadRequest)
+		respondWithErrors(w, http.StatusBadRequest, []ErrorObject{errorInvalidIdentity()})
 		return
 	}
 
@@ -337,14 +332,14 @@ func (h *JobHandler) ResumeJob(w http.ResponseWriter, r *http.Request) {
 	job, err := h.jobService.ResumeJobWithUserCheck(id, ident.Identity.User.UserID)
 	if err != nil {
 		if err == domain.ErrJobNotFound {
-			http.Error(w, "Job not found", http.StatusNotFound)
+			respondWithErrors(w, http.StatusNotFound, []ErrorObject{errorNotFound("job", id)})
 			return
 		}
 		if err == domain.ErrJobNotPaused {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			respondWithError(w, http.StatusBadRequest, "Job Not Paused", "The job is not in a paused state and cannot be resumed")
 			return
 		}
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		respondWithErrors(w, http.StatusInternalServerError, []ErrorObject{errorInternalServer()})
 		return
 	}
 
