@@ -2,23 +2,22 @@ package scheduler
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"sync"
 
 	"github.com/robfig/cron/v3"
 	"insights-scheduler/internal/core/domain"
-	"insights-scheduler/internal/core/usecases"
+	"insights-scheduler/internal/core/ports"
 )
 
 type CronScheduler struct {
-	jobService *usecases.JobService
+	jobService ports.SchedulerJobService
 	cron       *cron.Cron
 	jobEntries map[string]cron.EntryID // jobID -> cronEntryID mapping
 	mu         sync.RWMutex
 }
 
-func NewCronScheduler(jobService *usecases.JobService) *CronScheduler {
+func NewCronScheduler(jobService ports.SchedulerJobService) *CronScheduler {
 	return &CronScheduler{
 		jobService: jobService,
 		cron:       cron.New(), // Standard 5-field format (minute hour dom month dow)
@@ -42,7 +41,9 @@ func (s *CronScheduler) Start(ctx context.Context) {
 
 func (s *CronScheduler) Stop() {
 	log.Println("Stopping cron scheduler")
+	s.mu.Lock()
 	ctx := s.cron.Stop()
+	s.mu.Unlock()
 	<-ctx.Done()
 	log.Println("Cron scheduler stopped")
 }
@@ -74,7 +75,7 @@ func (s *CronScheduler) ScheduleJob(job domain.Job) error {
 		log.Printf("Executing cron job: %s (%s)", job.Name, job.ID)
 
 		// Get the latest job state from repository
-		currentJob, err := s.jobService.GetJob(job.ID)
+		currentJob, err := s.jobService.GetJob(context.Background(), job.ID)
 		if err != nil {
 			log.Printf("Error getting job %s for execution: %v", job.ID, err)
 			return
@@ -122,15 +123,14 @@ func (s *CronScheduler) UnscheduleJob(jobID string) {
 // loadAndScheduleAllJobs loads all scheduled jobs from the repository and schedules them
 func (s *CronScheduler) loadAndScheduleAllJobs() {
 	jobs, err := s.jobService.ListJobs()
-	fmt.Println("inside loadAndScheduleAllJobs - jobs: ", jobs)
 	if err != nil {
 		log.Printf("Error loading jobs: %v", err)
 		return
 	}
 
+	log.Printf("Loading %d jobs for scheduling", len(jobs))
+
 	for _, job := range jobs {
-		fmt.Printf("Scheduling job: %v\n", job)
-		fmt.Printf("job.Status: %v\n", job.Status)
 		// Only schedule jobs that are scheduled or failed
 		if job.Status == domain.StatusScheduled || job.Status == domain.StatusFailed {
 			if err := s.ScheduleJob(job); err != nil {

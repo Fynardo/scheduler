@@ -131,6 +131,7 @@ func createMigration(cfg *config.Config) (*migrate.Migrate, error) {
 	switch cfg.Database.Type {
 	case "sqlite":
 		databaseURL = fmt.Sprintf("sqlite3://%s", cfg.Database.Path)
+		log.Printf("Running migrations for SQLite database: %s", cfg.Database.Path)
 	case "postgres", "postgresql":
 		databaseURL = fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=%s",
 			cfg.Database.Username,
@@ -140,12 +141,14 @@ func createMigration(cfg *config.Config) (*migrate.Migrate, error) {
 			cfg.Database.Name,
 			cfg.Database.SSLMode,
 		)
+		// Log connection info WITHOUT password
+		log.Printf("Running migrations for PostgreSQL database: %s@%s:%d/%s",
+			cfg.Database.Username, cfg.Database.Host, cfg.Database.Port, cfg.Database.Name)
 	default:
 		return nil, fmt.Errorf("unsupported database type: %s", cfg.Database.Type)
 	}
 
 	migrationsPath := "file://db/migrations"
-	fmt.Println("databaseURL", databaseURL)
 	m, err := migrate.New(migrationsPath, databaseURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize migration: %w", err)
@@ -232,7 +235,7 @@ func runServer(cmd *cobra.Command, args []string) {
 	var userValidator identity.UserValidator
 	switch cfg.UserValidatorImpl {
 	case "bop":
-		fmt.Println("Intializing BOP User Validator")
+		log.Println("Initializing BOP User Validator")
 		userValidator = identity.NewBopUserValidator(
 			cfg.Bop.BaseURL,
 			cfg.Bop.APIToken,
@@ -240,7 +243,7 @@ func runServer(cmd *cobra.Command, args []string) {
 			cfg.Bop.InsightsEnv,
 		)
 	case "fake":
-		fmt.Println("Intializing FAKE User Validator")
+		log.Println("Initializing FAKE User Validator")
 		userValidator = identity.NewFakeUserValidator()
 	default:
 		log.Fatalf("Unsupported UserValidator type: %s", cfg.UserValidatorImpl)
@@ -292,17 +295,21 @@ func runServer(cmd *cobra.Command, args []string) {
 	jobExecutor := executor.NewJobExecutor(executors, runRepo)
 
 	// Create functional core service
-	jobService := usecases.NewJobService(repo, schedulingService, jobExecutor)
+	coreJobService := usecases.NewJobService(repo, schedulingService, jobExecutor)
 	jobRunService := usecases.NewJobRunService(runRepo, repo)
 
-	// Create cron scheduler
-	cronScheduler := scheduler.NewCronScheduler(jobService)
+	// Create adapters for different consumers
+	httpJobService := usecases.NewAuthorizedJobService(coreJobService)
+	schedulerJobService := usecases.NewSchedulerJobService(coreJobService)
 
-	// Connect job service to cron scheduler
-	jobService.SetCronScheduler(cronScheduler)
+	// Create cron scheduler with scheduler service adapter
+	cronScheduler := scheduler.NewCronScheduler(schedulerJobService)
 
-	// Setup HTTP routes
-	router := httpShell.SetupRoutes(jobService, jobRunService)
+	// Connect core job service to cron scheduler
+	coreJobService.SetCronScheduler(cronScheduler)
+
+	// Setup HTTP routes with authorized service adapter
+	router := httpShell.SetupRoutes(httpJobService, jobRunService)
 
 	// Create HTTP server
 	serverAddr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
