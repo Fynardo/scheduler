@@ -27,9 +27,9 @@ objects:
     - name: api
       webServices:
         private:
-          enabled: True
-        public:
           enabled: False
+        public:
+          enabled: True
         metrics:
           enabled: False
       minReplicas: ${{API_REPLICAS}}
